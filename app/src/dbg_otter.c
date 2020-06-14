@@ -509,7 +509,11 @@ int main(int argc, char *argv[]) {
     open_serial(argv[2]);
     enter_reset_state();
     write_mem_range(0, argv[1]);
-    if (debug) set_paused_status();
+    if (debug) {
+        set_paused_status();
+    } else {
+        clear_paused_status();
+    }
     exit_reset_state();
 
     while (debug) {
