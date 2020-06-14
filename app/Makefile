@@ -1,5 +1,5 @@
-OUTPUT := bin/prog_otter
-SOURCES := src/prog_otter.c
+OUTPUT := bin/dbg_otter
+SOURCES := src/dbg_otter.c
 
 .PHONY: all
 all: $(OUTPUT) ;
@@ -9,4 +9,4 @@ $(OUTPUT): $(SOURCES)
 
 .PHONY: clean
 clean:
-	$(RM) bin/prog_otter
+	$(RM) $(OUTPUT)
