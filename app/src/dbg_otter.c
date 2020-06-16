@@ -30,6 +30,7 @@ volatile sig_atomic_t ctrlc = 0;
 
 int serial_port;
 uint32_t data_cksum;
+int status = 0;
 
 #define APPLY_CMD_CKSUM(x) ((x) << 8) ^ ((x) & 0xFF) ^ (((x) & 0xFF00) >> 8) ^ (((x) & 0xFF0000) >> 16)
 
@@ -79,6 +80,9 @@ uint32_t data_cksum;
 #define CMD_WRITE_REG       0x0FF00C  // args = {addr}, wdata = 1 word, no rdata
 #define CMD_SET_HW_BREAK    0x0FF00D  // args = {index}, wdata = {addr}, no rdata
 #define CMD_CLR_HW_BREAK    0x0FF00E  // args = {index}, no wdata, no rdata
+
+#define ST_RESET 0b01
+#define ST_PAUSED 0b10
 
 #define MAX_HW_BREAKPOINTS 8
 
@@ -260,6 +264,7 @@ void enter_reset_state(void) {
     fprintf(stderr, "Putting MCU into reset state... ");
     send_word(cmd);
     expect_word(cmd);  // expect cmd echo
+    status |= ST_RESET;
     fprintf(stderr, "success\n");
 }
 
@@ -269,6 +274,7 @@ void exit_reset_state(void) {
     fprintf(stderr, "Taking MCU out of reset state... ");
     send_word(cmd);
     expect_word(cmd);  // expect cmd echo
+    status &= ~ST_RESET;
     fprintf(stderr, "success\n");
 }
 
@@ -316,6 +322,10 @@ void flush_and_show_progress(long long complete, long long total) {
 }
 
 void write_mem_range(uint32_t start_addr, char *filepath) {
+    if (!((status & ST_PAUSED) || (status & ST_RESET))) {
+        fprintf(stderr, "OTTER must be paused or in reset to access memory. Enter status command to update.\n");
+        return;
+    }
     off_t num_words;
     int file;
     off_t i;
@@ -344,6 +354,7 @@ void set_paused_status() {
     fprintf(stderr, "Setting MCU paused status... ");
     send_word(cmd);
     expect_word(cmd);  // expect cmd echo
+    status |= ST_PAUSED;
     fprintf(stderr, "success\n");
 }
 
@@ -353,6 +364,7 @@ void clear_paused_status() {
     fprintf(stderr, "Clearing MCU paused status... ");
     send_word(cmd);
     expect_word(cmd);  // expect cmd echo
+    status &= ~ST_PAUSED;
     fprintf(stderr, "success\n");
 }
 
@@ -362,6 +374,7 @@ void single_step() {
     fprintf(stderr, "Single-stepping MCU... ");
     send_word(cmd);
     expect_word(cmd);  // expect cmd echo
+    status |= ST_PAUSED;
     fprintf(stderr, "success\n");
 }
 
@@ -377,6 +390,7 @@ uint32_t get_status() {
     uint32_t word = expect_any_word();
     data_cksum ^= word;
     verify_checksum();
+    status = word;
     return word;
 }
 
@@ -409,7 +423,11 @@ void clear_hw_breakpoint(uint32_t idx) {
     verify_checksum();
 }
 
-uint32_t read_mem(uint32_t addr) {
+int read_mem(uint32_t addr, uint32_t *word) {
+    if (!((status & ST_PAUSED) || (status & ST_RESET))) {
+        fprintf(stderr, "OTTER must be paused or in reset to access memory. Enter status command to update.\n");
+        return 0;
+    }
     uint32_t cmd;
     cmd = APPLY_CMD_CKSUM(CMD_READ_MEM);
     fprintf(stderr, "Starting mem read... ");
@@ -421,13 +439,17 @@ uint32_t read_mem(uint32_t addr) {
     data_cksum ^= addr;
     fsync(serial_port);
     fprintf(stderr, "receiving data... ");
-    uint32_t word = expect_any_word();
-    data_cksum ^= word;
+    *word = expect_any_word();
+    data_cksum ^= *word;
     verify_checksum();
-    return word;
+    return 1;
 }
 
 void write_mem(uint32_t addr, uint32_t word) {
+    if (!((status & ST_PAUSED) || (status & ST_RESET))) {
+        fprintf(stderr, "OTTER must be paused or in reset to access memory. Enter status command to update.\n");
+        return;
+    }
     uint32_t cmd;
     cmd = APPLY_CMD_CKSUM(CMD_WRITE_MEM);
     fprintf(stderr, "Starting mem write... ");
@@ -443,7 +465,11 @@ void write_mem(uint32_t addr, uint32_t word) {
     verify_checksum();
 }
 
-uint32_t read_reg(uint32_t reg) {
+int read_reg(uint32_t reg, uint32_t *word) {
+    if (!((status & ST_PAUSED) || (status & ST_RESET))) {
+        fprintf(stderr, "OTTER must be paused or in reset to access registers. Enter status command to update.\n");
+        return 0;
+    }
     uint32_t cmd;
     cmd = APPLY_CMD_CKSUM(CMD_READ_REG);
     fprintf(stderr, "Starting reg read... ");
@@ -455,13 +481,17 @@ uint32_t read_reg(uint32_t reg) {
     data_cksum ^= reg;
     fsync(serial_port);
     fprintf(stderr, "receiving data... ");
-    uint32_t word = expect_any_word();
-    data_cksum ^= word;
+    *word = expect_any_word();
+    data_cksum ^= *word;
     verify_checksum();
-    return word;
+    return 1;
 }
 
 void write_reg(uint32_t reg, uint32_t word) {
+    if (!((status & ST_PAUSED) || (status & ST_RESET))) {
+        fprintf(stderr, "OTTER must be paused or in reset to access registers. Enter status command to update.\n");
+        return;
+    }
     uint32_t cmd;
     cmd = APPLY_CMD_CKSUM(CMD_WRITE_REG);
     fprintf(stderr, "Starting reg write... ");
@@ -597,19 +627,21 @@ int main(int argc, char *argv[]) {
                     puts(PARSE_ERROR_MSG);
                 } else {
                     switch (get_status() & 0b11) {
-                        case 0b00: puts("running"); break;
-                        case 0b01: puts("reset"); break;
-                        case 0b10: puts("paused"); break;
-                        case 0b11: puts("reset, pause pending"); break;
+                        case 0: puts("running"); break;
+                        case ST_RESET: puts("reset"); break;
+                        case ST_PAUSED: puts("paused"); break;
+                        case ST_PAUSED | ST_RESET: puts("reset, pause pending"); break;
                     }
                 }
             } else if (match_strs(cmd, "rmem", "rm")) {
-                uint32_t addr;
+                uint32_t addr, word;
                 if (!(parse_uint32(strtok(NULL, " "), &addr))
                     || strtok(NULL, " ")) {
                     puts(PARSE_ERROR_MSG);
                 } else {
-                    printf("0x%08X\n", read_mem(addr));
+                    if (read_mem(addr, &word)) {
+                        printf("0x%08X\n", word);
+                    }
                 }
             } else if (match_strs(cmd, "wmem", "wm")) {
                 uint32_t addr, word;
@@ -621,12 +653,14 @@ int main(int argc, char *argv[]) {
                     write_mem(addr, word);
                 }
             } else if (match_strs(cmd, "rreg", "rr")) {
-                uint32_t reg;
+                uint32_t reg, word;
                 if (!(parse_uint32(strtok(NULL, " "), &reg))
                     || strtok(NULL, " ")) {
                     puts(PARSE_ERROR_MSG);
                 } else {
-                    printf("0x%08X\n", read_reg(reg));
+                    if (read_reg(reg, &word)) {
+                        printf("0x%08X\n", word);
+                    }
                 }
             } else if (match_strs(cmd, "wreg", "wr")) {
                 uint32_t reg, word;
