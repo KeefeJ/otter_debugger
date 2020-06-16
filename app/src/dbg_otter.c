@@ -344,7 +344,6 @@ void write_mem_range(uint32_t start_addr, char *filepath) {
     }
 
     verify_checksum();
-    fprintf(stderr, "Successfully programmed!\n");
     close(file);
 }
 
@@ -539,6 +538,7 @@ int main(int argc, char *argv[]) {
     open_serial(argv[2]);
     enter_reset_state();
     write_mem_range(0, argv[1]);
+    fprintf(stderr, "Successfully programmed!\n");
     if (debug) {
         set_paused_status();
     } else {
